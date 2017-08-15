@@ -68,6 +68,10 @@ class CalculatorServiceUDP(object):
         self.local_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
+    def connect(self):
+        pass
+
+
     def serve(self):
         self.local_sock.bind((self.remote_host, self.remote_port))
         print('Started serving on {}:{}'.format(self.remote_host, self.remote_port))
@@ -139,39 +143,55 @@ class CalculatorServiceTCP(object):
         self.function_map = function_map
         self.external_conn_handle = connection_handle
         self.session_endpoint = session_endpoint
+        self.local_sock = None
+        self.local_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        #if(mode == CLIENT):
 
+
+    def connect(self):
+        self.local_sock.connect((self.remote_host, self.remote_port))
 
 
     def serve(self):
-        self.local_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.local_sock.bind((self.remote_host, self.remote_port))
         self.local_sock.listen(1)
         print('Started serving on {}:{}'.format(self.remote_host, self.remote_port))
 
         while True:
             remote_conn, remote_addr = self.local_sock.accept()
-            request_data = remote_conn.recv(RECV_BUFF)
+            print('Accepted new connection request')
 
-            print('Received request buffer:{}'.format(request_data))
+            try:
+                while True:
+                    request_data = remote_conn.recv(RECV_BUFF)
 
-            decoded_list = CalculatorPacket.as_string(request_data)
+                    print('Received request buffer:{}'.format(request_data))
+
+                    if(not len(request_data)):
+                        #Close connection on empty request
+                        break
+
+                    decoded_list = CalculatorPacket.as_string(request_data)
             
-            #Get identifiers from request
-            identifier = decoded_list[0]
-            operation = decoded_list[1]
+                    #Get identifiers from request
+                    identifier = decoded_list[0]
+                    operation = decoded_list[1]
 
-            #Get function handler
-            handler = self.function_map[operation].handler
+                    #Get function handler
+                    handler = self.function_map[operation].handler
 
-            #Perform operation
-            response_val = handler(*decoded_list[2:])
+                    #Perform operation
+                    response_val = handler(*decoded_list[2:])
 
-            #Create response packet
-            packet = CalculatorPacket(identifier, operation, response_val)
+                    #Create response packet
+                    packet = CalculatorPacket(identifier, operation, response_val)
 
-            #Send response
-            print('Sending response buffer:{}'.format(packet.as_bytes()))
-            remote_conn.send(packet.as_bytes())
+                    #Send response
+                    print('Sending response buffer:{}'.format(packet.as_bytes()))
+                    remote_conn.send(packet.as_bytes())
+
+            finally:
+                remote_conn.close()
 
 
     def execute(self, *args):
@@ -186,17 +206,14 @@ class CalculatorServiceTCP(object):
                 #Edge Network Service: data transer & receipt - START
                 self.external_conn_handle.send(packet.as_bytes())
                 print('Data sent')
-                calculated_packet_str, remote = self.external_conn_handle.recv(RECV_BUFF)
+                calculated_packet_str = self.external_conn_handle.recv(RECV_BUFF)
                 print('Response received')
                 #Edge Network Service: data transer & receipt - END
             else:
                 #Non-EDGE mode
-                self.local_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.local_sock.connect((self.remote_host, self.remote_port))
                 self.local_sock.send(packet.as_bytes())
                 print('Data sent')
                 calculated_packet_str = self.local_sock.recv(RECV_BUFF)
-                self.local_sock.close()
                 print('Response received')
         
             if(calculated_packet_str != None and len(calculated_packet_str) > 0):
