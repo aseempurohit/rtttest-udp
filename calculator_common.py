@@ -17,6 +17,8 @@ DIV = 4
 CLIENT = 1
 SERVER = 2
 
+UTF8_ENCODING = 'utf-8'
+
 #Simulated enumeration function
 def enum(**named_values):
     return type('Enum', (), named_values)
@@ -42,7 +44,7 @@ class CalculatorPacket():
         self.code = operation
         self.values = args
 
-    def as_bytes(self):
+    def encode(self):
         packet_string = self.id + \
             SEPARATOR + \
             str(self.code)
@@ -50,37 +52,35 @@ class CalculatorPacket():
         for value in self.values:
             packet_string = packet_string + SEPARATOR + str(value)
 
-        return bytearray(str(packet_string))
+        return packet_string
 
     @staticmethod
-    def as_string(byte_data):
-        return byte_data.decode().split(':')
+    def decode(encoded_data):
+        return encoded_data.split(':')
 
 
 class CalculatorServiceUDP(object):
-
-    def __init__(self, server_host, server_port, function_map, mode = SERVER, connection_handle = None, session_endpoint = None):
+    def __init__(self, server_host, server_port, function_map, mode = SERVER, connection_handle = None):
         self.remote_host = server_host
         self.remote_port = server_port
         self.function_map = function_map
-        self.external_conn_handle = connection_handle
-        self.session_endpoint = session_endpoint
+        self.sdk_client_handle = connection_handle
         self.local_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
 
     def connect(self):
         pass
-
 
     def serve(self):
         self.local_sock.bind((self.remote_host, self.remote_port))
         print('Started serving on {}:{}'.format(self.remote_host, self.remote_port))
         while True:
             request_data, remote = self.local_sock.recvfrom(RECV_BUFF)
+            # Decode bytestream
+            request_data = request_data.decode(UTF8_ENCODING)
 
             print('Received request buffer:{}'.format(request_data))
 
-            decoded_list = CalculatorPacket.as_string(request_data)
+            decoded_list = CalculatorPacket.decode(request_data)
             
             #Get identifiers from request
             identifier = decoded_list[0]
@@ -94,33 +94,39 @@ class CalculatorServiceUDP(object):
 
             #Create response packet
             packet = CalculatorPacket(identifier, operation, response_val)
+            #Encode packet
+            encoded_packet = packet.encode()
 
             #Send response
-            print('Sending response buffer:{}'.format(packet.as_bytes()))
-            self.local_sock.sendto(packet.as_bytes(), remote)
+            print('Sending response buffer:{}'.format(encoded_packet))
+            self.local_sock.sendto(encoded_packet.encode(UTF8_ENCODING), remote)
+
     def execute(self, *args):
         identifier = get_id()
         packet = CalculatorPacket(identifier, *args)
         
-        #import pdb;pdb.set_trace()
         try:
-            calculated_packet_str = None
+            calculated_packet = None
             #Use ENS Client SDK provided handle, if available
-            if self.external_conn_handle:
+            if self.sdk_client_handle:
                 #Edge Network Service: data transer & receipt - START
-                self.external_conn_handle.sendto(packet.as_bytes(), (self.session_endpoint.host, self.session_endpoint.port))
-                print('Data sent')
-                calculated_packet_str, remote = self.external_conn_handle.recvfrom(RECV_BUFF)
+                encoded_packet = packet.encode()
+                calculated_packet = self.sdk_client_handle.request(encoded_packet, len(encoded_packet))
                 print('Response received')
                 #Edge Network Service: data transer & receipt - END
             else:
-                self.local_sock.sendto(packet.as_bytes(), (self.remote_host, self.remote_port))
+                #Non-EDGE mode
+                #Encode packet
+                encoded_packet = packet.encode()
+                self.local_sock.sendto(encoded_packet.encode(UTF8_ENCODING), (self.remote_host, self.remote_port))
                 print('Data sent')
-                calculated_packet_str, remote = self.local_sock.recvfrom(RECV_BUFF)
+                calculated_packet, remote = self.local_sock.recvfrom(RECV_BUFF)
                 print('Response received')
+                #Decode response
+                calculated_packet = calculated_packet.decode(UTF8_ENCODING)
         
-            if(calculated_packet_str != None and len(calculated_packet_str) > 0):
-                decoded_response_list = CalculatorPacket.as_string(calculated_packet_str)
+            if(calculated_packet != None and len(calculated_packet) > 0):
+                decoded_response_list = CalculatorPacket.decode(calculated_packet)
 
                 if(decoded_response_list[0] == identifier):
                     return decoded_response_list[2]
@@ -132,26 +138,25 @@ class CalculatorServiceUDP(object):
         return 0
 
     def terminate(self):
-        self.local_sock.close()
+        if self.sdk_client_handle:
+            self.sdk_client_handle.close()
+        else:
+            self.local_sock.close()
 
 
 class CalculatorServiceTCP(object):
-
-    def __init__(self, server_host, server_port, function_map, mode = SERVER, connection_handle = None, session_endpoint = None):
+    def __init__(self, server_host, server_port, function_map, mode = SERVER, connection_handle = None):
         self.remote_host = server_host
         self.remote_port = server_port
         self.function_map = function_map
-        self.external_conn_handle = connection_handle
-        self.session_endpoint = session_endpoint
+        self.sdk_client_handle = connection_handle
         self.local_sock = None
         self.local_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        #if(mode == CLIENT):
-
 
     def connect(self):
         self.local_sock.connect((self.remote_host, self.remote_port))
 
-
+    # TCP Serving loop
     def serve(self):
         self.local_sock.bind((self.remote_host, self.remote_port))
         self.local_sock.listen(1)
@@ -164,14 +169,15 @@ class CalculatorServiceTCP(object):
             try:
                 while True:
                     request_data = remote_conn.recv(RECV_BUFF)
-
+                    # Decode bytestream
+                    request_data = request_data.decode(UTF8_ENCODING)
                     print('Received request buffer:{}'.format(request_data))
 
                     if(not len(request_data)):
                         #Close connection on empty request
                         break
 
-                    decoded_list = CalculatorPacket.as_string(request_data)
+                    decoded_list = CalculatorPacket.decode(request_data)
             
                     #Get identifiers from request
                     identifier = decoded_list[0]
@@ -186,9 +192,12 @@ class CalculatorServiceTCP(object):
                     #Create response packet
                     packet = CalculatorPacket(identifier, operation, response_val)
 
+                    #Encode packet
+                    encoded_packet = packet.encode()
+
                     #Send response
-                    print('Sending response buffer:{}'.format(packet.as_bytes()))
-                    remote_conn.send(packet.as_bytes())
+                    print('Sending response buffer:{}'.format(encoded_packet))
+                    remote_conn.send(encoded_packet.encode(UTF8_ENCODING))
 
             finally:
                 remote_conn.close()
@@ -198,26 +207,29 @@ class CalculatorServiceTCP(object):
         identifier = get_id()
         packet = CalculatorPacket(identifier, *args)
         
-        #import pdb;pdb.set_trace()
         try:
-            calculated_packet_str = None
+            calculated_packet = None
             #Use ENS Client SDK provided handle, if available
-            if self.external_conn_handle:
+            if self.sdk_client_handle:
                 #Edge Network Service: data transer & receipt - START
-                self.external_conn_handle.send(packet.as_bytes())
-                print('Data sent')
-                calculated_packet_str = self.external_conn_handle.recv(RECV_BUFF)
+                encoded_packet = packet.encode()
+                calculated_packet = self.sdk_client_handle.request(encoded_packet, len(encoded_packet))
                 print('Response received')
                 #Edge Network Service: data transer & receipt - END
             else:
                 #Non-EDGE mode
-                self.local_sock.send(packet.as_bytes())
+                #Encode packet
+                encoded_packet = packet.encode()
+                self.local_sock.send(encoded_packet.encode(UTF8_ENCODING))
                 print('Data sent')
-                calculated_packet_str = self.local_sock.recv(RECV_BUFF)
+                calculated_packet = self.local_sock.recv(RECV_BUFF)
+                #Decode response
+                calculated_packet = calculated_packet.decode(UTF8_ENCODING)
+
                 print('Response received')
         
-            if(calculated_packet_str != None and len(calculated_packet_str) > 0):
-                decoded_response_list = CalculatorPacket.as_string(calculated_packet_str)
+            if(calculated_packet != None and len(calculated_packet) > 0):
+                decoded_response_list = CalculatorPacket.decode(calculated_packet)
 
                 if(decoded_response_list[0] == identifier):
                     return decoded_response_list[2]
@@ -229,8 +241,10 @@ class CalculatorServiceTCP(object):
         return 0
 
     def terminate(self):
-        self.local_sock.close()
-
+        if self.sdk_client_handle:
+            self.sdk_client_handle.close()
+        else:
+            self.local_sock.close()
 
 def addition(*args):
     result = 0
