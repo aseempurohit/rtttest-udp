@@ -1,4 +1,4 @@
-FROM python:3.4
+FROM python:3.4.7-alpine
 MAINTAINER Anurag Ghosh "anurag.ghosh@aricent.com"
 RUN mkdir /app
 COPY udp-server.py /app
